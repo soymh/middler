@@ -49,7 +49,7 @@ def generate_system_prompt():
 
 async def stream_response(response):
     """ Converts a blocking requests stream into an async generator """
-    for chunk in response.iter_content(chunk_size=512):
+    for chunk in response.iter_content(chunk_size=4096):
         yield chunk
 
 @app.post("/v1/chat/completions")
@@ -75,47 +75,50 @@ async def chat(request: Request):
 
         async def event_stream():
             collected_message = ""
-            exit_loops=False
+            exit_loops = False
+            response_chunks = []
+
             async for chunk in stream_response(response):
-                if exit_loops:
-                    break
                 chunk_str = chunk.decode()
+                response_chunks.append(chunk_str)  # Store the chunk
                 chunk_content = chunk_str.split(': ', 1)[-1]
                 content = json.loads(chunk_content.split(': ', 1)[-1] if (chunk_content not in ["[DONE]\n", "\n"]) else "{\"choices\": [{\"delta\": {\"content\": \"\"}}]}")['choices'][0]['delta']['content']
 
                 collected_message += content
 
-                # Check if any tool is mentioned in the response
-                for func_name in TOOLS:
-                    if func_name in collected_message:
-                        try:
-                            logging.info(f"Triggering function: {func_name}")
-                            tool_result = TOOLS[func_name]()  # Execute function
+            # Check if any tool is mentioned in the response
+            for func_name in TOOLS:
+                if func_name in collected_message:
+                    try:
+                        logging.info(f"Triggering function: {func_name}")
+                        tool_result = TOOLS[func_name]()  # Execute function
 
-                            request_data["messages"].append({
-                                "role": "assistant",
-                                "content": f"{collected_message}"
-                            })
-                            request_data["messages"].append({
-                                "role": "system",
-                                "content": f"Here is the tool result: {tool_result}."
-                            })
+                        request_data["messages"].append({
+                            "role": "assistant",
+                            "content": f"{collected_message}"
+                        })
+                        request_data["messages"].append({
+                            "role": "system",
+                            "content": f"Here is the tool result: {tool_result}."
+                        })
 
 
-                            # Send a second request to LLM with the tool result
-                            final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL, json=request_data, headers=headers, stream=True))
+                        # Send a second request to LLM with the tool result
+                        final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL, json=request_data, headers=headers, stream=True))
 
-                            # 🔥 Continue streaming the new response instead of returning
-                            async for new_chunk in stream_response(final_response):
-                                new_chunk_str = new_chunk.decode()
-                                yield new_chunk_str  # Keep streaming the new response
-                            exit_loops=True
-                            break
-                        except Exception as e:
-                            logging.error(f"Function execution error: {str(e)}")
-                            continue  # Skip if there's an issue
-                if exit_loops == False:
-                    yield chunk_str
+                        # 🔥 Continue streaming the new response instead of returning
+                        async for new_chunk in stream_response(final_response):
+                            new_chunk_str = new_chunk.decode()
+                            yield new_chunk_str  # Keep streaming the new response
+                        exit_loops=True
+                        break
+                    except Exception as e:
+                        logging.error(f"Function execution error: {str(e)}")
+                        continue  # Skip if there's an issue
+            if not exit_loops:
+                for chunk in response_chunks:
+                    yield chunk
+
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     except Exception as e:
