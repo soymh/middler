@@ -33,7 +33,7 @@ AUTH_HEADER = {"Authorization": f"Bearer {API_KEY}"}
 
 # Define available tools
 TOOLS = {
-    "get_time": lambda: "The current time is 2025-02-01T12:34:56Z.",
+    "get_time": lambda: "The current time is 2025-02-01T08:45:56Z.",
     "calculate_sum": lambda x, y: f"The sum of {x} and {y} is {x + y}."
 }
 
@@ -75,13 +75,15 @@ async def chat(request: Request):
 
         async def event_stream():
             collected_message = ""
+            exit_loops=False
             async for chunk in stream_response(response):
+                if exit_loops:
+                    break
                 chunk_str = chunk.decode()
                 chunk_content = chunk_str.split(': ', 1)[-1]
                 content = json.loads(chunk_content.split(': ', 1)[-1] if (chunk_content not in ["[DONE]\n", "\n"]) else "{\"choices\": [{\"delta\": {\"content\": \"\"}}]}")['choices'][0]['delta']['content']
 
                 collected_message += content
-                # yield chunk_str  # Keep streaming chunks
 
                 # Check if any tool is mentioned in the response
                 for func_name in TOOLS:
@@ -107,12 +109,13 @@ async def chat(request: Request):
                             async for new_chunk in stream_response(final_response):
                                 new_chunk_str = new_chunk.decode()
                                 yield new_chunk_str  # Keep streaming the new response
-
+                            exit_loops=True
+                            break
                         except Exception as e:
                             logging.error(f"Function execution error: {str(e)}")
                             continue  # Skip if there's an issue
-
-
+                if exit_loops == False:
+                    yield chunk_str
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     except Exception as e:
