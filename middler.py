@@ -79,25 +79,39 @@ async def chat(request: Request):
                 chunk_str = chunk.decode()
                 chunk_content = chunk_str.split(': ', 1)[-1]
                 content = json.loads(chunk_content.split(': ', 1)[-1] if (chunk_content not in ["[DONE]\n", "\n"]) else "{\"choices\": [{\"delta\": {\"content\": \"\"}}]}")['choices'][0]['delta']['content']
-                # logging.info(f"chunk_content is : --{chunk_content}--")
-                # logging.info(f"content is : {content}")
 
                 collected_message += content
-                yield chunk_str
+                # yield chunk_str  # Keep streaming chunks
 
                 # Check if any tool is mentioned in the response
                 for func_name in TOOLS:
                     if func_name in collected_message:
                         try:
                             logging.info(f"Triggering function: {func_name}")
-                            tool_result = TOOLS[func_name]()  # Execute function call
+                            tool_result = TOOLS[func_name]()  # Execute function
+
+                            request_data["messages"].append({
+                                "role": "assistant",
+                                "content": f"{collected_message}"
+                            })
+                            request_data["messages"].append({
+                                "role": "system",
+                                "content": f"Here is the tool result: {tool_result}."
+                            })
+
+
+                            # Send a second request to LLM with the tool result
+                            final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL, json=request_data, headers=headers, stream=True))
+
+                            # 🔥 Continue streaming the new response instead of returning
+                            async for new_chunk in stream_response(final_response):
+                                new_chunk_str = new_chunk.decode()
+                                yield new_chunk_str  # Keep streaming the new response
 
                         except Exception as e:
                             logging.error(f"Function execution error: {str(e)}")
-                            continue  # Skip if parsing fails
+                            continue  # Skip if there's an issue
 
-                        collected_message = tool_result
-                        # yield json.dumps({"tool_call": func_name, "result": tool_result}).encode()
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
