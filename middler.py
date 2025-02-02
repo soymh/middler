@@ -77,15 +77,20 @@ async def chat(request: Request):
             collected_message = ""
             async for chunk in stream_response(response):
                 chunk_str = chunk.decode()
-                collected_message += chunk_str
+                chunk_content = chunk_str.split(': ', 1)[-1]
+                content = json.loads(chunk_content.split(': ', 1)[-1] if (chunk_content not in ["[DONE]\n", "\n"]) else "{\"choices\": [{\"delta\": {\"content\": \"\"}}]}")['choices'][0]['delta']['content']
+                # logging.info(f"chunk_content is : --{chunk_content}--")
+                # logging.info(f"content is : {content}")
+
+                collected_message += content
                 yield chunk_str
 
                 # Check if any tool is mentioned in the response
                 for func_name in TOOLS:
                     if func_name in collected_message:
                         try:
-                            logging.info(f"Triggering function: {func_name} with args: {collected_message}")
-                            tool_result = eval(f"{collected_message}")  # Execute function call
+                            logging.info(f"Triggering function: {func_name}")
+                            tool_result = eval(TOOLS[func_name]())  # Execute function call
                         except Exception as e:
                             logging.error(f"Function execution error: {str(e)}")
                             continue  # Skip if parsing fails
