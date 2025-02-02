@@ -57,11 +57,17 @@ async def chat(request: Request):
     try:
         # Parse request JSON
         request_data = await request.json()
-        logging.info(f"Incoming Request: {json.dumps(request_data, indent=2)}")
+        logging.info(f"""
+        Incoming Request:
+        {json.dumps(request_data, indent=2)}
+        """)
 
         # Inject system message
         system_message = {"role": "system", "content": generate_system_prompt()}
         request_data["messages"].insert(0, system_message)
+        logging.info(f"""Sending Request: 
+        {json.dumps(request_data, indent=3)}
+        """)
 
         # Forward request to LLM server
         headers = {"Content-Type": "application/json", **AUTH_HEADER}
