@@ -90,13 +90,14 @@ async def chat(request: Request):
                     if func_name in collected_message:
                         try:
                             logging.info(f"Triggering function: {func_name}")
-                            tool_result = eval(TOOLS[func_name]())  # Execute function call
+                            tool_result = TOOLS[func_name]()  # Execute function call
+
                         except Exception as e:
                             logging.error(f"Function execution error: {str(e)}")
                             continue  # Skip if parsing fails
 
                         collected_message = tool_result
-                        yield json.dumps({"tool_call": func_name, "result": tool_result}).encode()
+                        # yield json.dumps({"tool_call": func_name, "result": tool_result}).encode()
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
