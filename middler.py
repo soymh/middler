@@ -8,6 +8,36 @@ import asyncio
 from dotenv import load_dotenv
 import logging
 import re
+import importlib.util
+import os
+import logging
+from tools.tools_base import Tool
+
+TOOLS = {}
+
+def load_tools():
+    tools_directory = "tools"
+    
+    for filename in os.listdir(tools_directory):
+        if filename.endswith(".py") and filename != "__init__.py":
+            tool_name = filename[:-3]  # Remove .py extension
+            module_path = os.path.join(tools_directory, filename)
+            
+            # Load module dynamically
+            spec = importlib.util.spec_from_file_location(tool_name, module_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            
+            # Find the tool class
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if isinstance(attr, type) and issubclass(attr, Tool) and attr is not Tool:
+                    TOOLS[tool_name] = attr()  # Instantiate and add to TOOLS
+                    logging.info(f"Loaded tool: {tool_name}")
+
+
+# Load tools at startup
+load_tools()
 
 # Load environment variables
 load_dotenv()
@@ -31,12 +61,6 @@ API_KEY = os.getenv('API_KEY')
 BASE_URL = os.getenv('BASE_URL', 'https://api.together.xyz/v1')
 
 AUTH_HEADER = {"Authorization": f"Bearer {API_KEY}"}
-
-# Define available tools (with argument support)
-TOOLS = {
-    "get_time": lambda: "The current time is 2025-02-01T08:45:56Z.",
-    "calculate_sum": lambda x, y: f"The sum of {x} and {y} is {x + y}."
-}
 
 # Generate system prompt describing available tools
 def generate_system_prompt():
@@ -121,21 +145,27 @@ async def chat(request: Request):
             # Execute each function sequentially
             for func_name, args in function_calls:
 
+                # Corrected tool execution logic
                 if func_name in TOOLS:
                     try:
                         logging.info(f"Triggering function: {func_name} with args {args}")
-                        # 🔥 FIX: Call functions properly even if args are empty
-                        tool_results[func_name] = TOOLS[func_name](**args) if args else TOOLS[func_name]()  
+                        # Instantiate the tool class
+                        tool_instance = TOOLS[func_name]  
+                        # Call the execute method, passing arguments if available
+                        tool_results[func_name] = tool_instance.execute(**args) if args else tool_instance.execute()
+
                     except Exception as e:
                         logging.error(f"Function execution error for {func_name}: {str(e)}")
                         tool_results[func_name] = f"Error executing function {func_name}"
 
-
             if tool_results:
-                # Append tool results to conversation
                 request_data["messages"].append({"role": "assistant", "content": collected_message})
+                
                 for func_name, result in tool_results.items():
-                    request_data["messages"].append({"role": "system", "content": f"Herer are tool results;Only you can see these results. Let the user know the results : Tool result ({func_name}): {result}"})
+                    request_data["messages"].append({
+                        "role": "system",
+                        "content": f"Here are tool results;Only you can see these results. Let the user know the results : {func_name} → {result}"
+                    })
 
                 # Send new request with tool results
                 final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL, json=request_data, headers=headers, stream=True))
