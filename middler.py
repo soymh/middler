@@ -13,6 +13,14 @@ import os
 import logging
 from tools.tools_base import Tool
 
+# Configure logging globally
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Ensure FastAPI captures logs
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
+
 TOOLS = {}
 
 def load_tools():
@@ -80,29 +88,26 @@ async def stream_response(response):
         yield chunk
 
 def extract_function_calls(text):
-    """ Extracts function calls from a response using regex """
+    """Extracts function calls from a response while preserving string values."""
     function_calls = []
-    pattern = r"(\w+)(?:\((.*?)\))?"  # Matches function calls with or without parentheses
+    pattern = r"(\w+)\((.*?)\)"  # Match function name + anything inside parentheses
 
     for match in re.finditer(pattern, text):
         func_name = match.group(1)
-        args_str = match.group(2) if match.group(2) else ""  # Handle missing args
+        args_str = match.group(2)
 
         args = {}
-        if args_str:  # Parse arguments only if they exist
-            for arg in args_str.split(","):
-                key_value = arg.split("=")
-                if len(key_value) == 2:
-                    key, value = key_value
-                    key, value = key.strip(), value.strip().strip('"').strip("'")
-                    try:
-                        value = eval(value)  # Convert numbers if possible
-                    except:
-                        pass  # Keep as string if eval fails
-                    args[key] = value
+        if args_str:
+            # Extract key-value pairs
+            key_value_pairs = re.findall(r"(\w+)\s*=\s*(\".*?\"|'.*?'|\S+)", args_str)
+
+            for key, value in key_value_pairs:
+                value = value.strip('"').strip("'")  # Remove extra quotes
+                args[key] = value
 
         function_calls.append((func_name, args))
 
+    logging.info(f"Extracted function calls: {function_calls}")
     return function_calls
 
 @app.post("/v1/chat/completions")
@@ -137,6 +142,7 @@ async def chat(request: Request):
                     content = ""
 
                 collected_message += content
+            logging.info(f"Assistant collected messages : {collected_message}")
 
             # Extract function calls from response
             function_calls = extract_function_calls(collected_message)
@@ -144,17 +150,20 @@ async def chat(request: Request):
 
             # Execute each function sequentially
             for func_name, args in function_calls:
+                logging.info(f"Assistant Called : {function_calls}")
 
                 # Corrected tool execution logic
                 if func_name in TOOLS:
                     try:
-                        logging.info(f"Triggering function: {func_name} with args {args}")
+                        logging.debug(f"Triggering function: {func_name} with args {args}")
                         # Instantiate the tool class
                         tool_instance = TOOLS[func_name]  
                         # Call the execute method, passing arguments if available
                         tool_results[func_name] = tool_instance.execute(**args) if args else tool_instance.execute()
 
                     except Exception as e:
+                        logging.debug(f"Triggering function: {func_name} with args {args}")
+
                         logging.error(f"Function execution error for {func_name}: {str(e)}")
                         tool_results[func_name] = f"Error executing function {func_name}"
 

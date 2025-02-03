@@ -1,10 +1,10 @@
-# tool_base.py (New file)
-from abc import ABC, abstractmethod
+import logging
 
-class Tool(ABC):
-    """ Base class for defining tools dynamically. """
+# Ensure logging is configured at module level
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    @abstractmethod
-    def execute(self, **kwargs):
-        """ Function that each tool must implement. """
-        pass
+class Tool:
+    """Base class for all tools."""
+
+    def execute(self, *args, **kwargs):
+        raise NotImplementedError("Each tool must implement the execute method.")
