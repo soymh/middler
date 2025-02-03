@@ -4,21 +4,20 @@ from tools.tools_base import Tool
 import logging
 
 class CreateMarkdownFile(Tool):
-    """ A tool that creates a Markdown file from the input text.
-
+    """ A tool that creates a Markdown file from the input text.You can create multiple N notes by calling this funciton for N times.
+        BUT YOU HAVE TO CALL IT ONCE EACH TIME!
     :param content: The text to be saved in the markdown file (MUST be provided). Provide all text at once.
+    :param name: The name for the file to be saved for the markdown file (MUST be provided).default is the date.
     """
 
-    def execute(self, content: str, directory: str = "~/Documents/obsidian", **kwargs):
+    def execute(self, content: str,name: str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), directory: str = "~/Documents/obsidian", **kwargs):
         logging.info(f"Received request to create markdown file:\n{content}")  # Log input
         logging.getLogger().handlers[0].flush()  # Force log flush
 
         # Ensure the target directory exists
         os.makedirs(directory, exist_ok=True)
 
-        # Generate a filename based on timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        file_name = f"{timestamp}.md"
+        file_name = f"{name}.md"
         file_path = os.path.join(directory, file_name)
 
         try:

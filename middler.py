@@ -7,11 +7,10 @@ import json
 import asyncio
 from dotenv import load_dotenv
 import logging
-import re
 import importlib.util
 from tools.tools_base import Tool
 
-# Configure logging globally
+# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -21,32 +20,23 @@ TOOLS = {}
 
 def load_tools():
     tools_directory = "tools"
-    
     for filename in os.listdir(tools_directory):
         if filename.endswith(".py") and filename != "__init__.py":
             tool_name = filename[:-3]  # Remove .py extension
             module_path = os.path.join(tools_directory, filename)
-            
-            # Load module dynamically
             spec = importlib.util.spec_from_file_location(tool_name, module_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
-            # Find the tool class
             for attr_name in dir(module):
                 attr = getattr(module, attr_name)
                 if isinstance(attr, type) and issubclass(attr, Tool) and attr is not Tool:
                     TOOLS[tool_name] = attr()  # Instantiate and add to TOOLS
                     logging.info(f"Loaded tool: {tool_name}")
 
-# Load tools at startup
-load_tools()
+load_tools()  # Load tools on startup
 
-# Load environment variables
 load_dotenv()
-
-# Logging setup
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 app = FastAPI()
 
@@ -59,10 +49,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API credentials
 API_KEY = os.getenv('API_KEY')
 BASE_URL = os.getenv('BASE_URL', 'https://api.together.xyz/v1')
-
 AUTH_HEADER = {"Authorization": f"Bearer {API_KEY}"}
 
 def generate_system_prompt():
@@ -72,37 +60,41 @@ def generate_system_prompt():
     )
     return f"""
     You are a helpful assistant with access to external functions.
-    You can use the following tools:
+    If the user request suggests function calling, You MUST return function calls in **valid JSON format** inside a single JSON object.
+    Available tools:
     {tool_descriptions}
-    When a function is needed, describe its call explicitly in your response, like `calculate_sum(x=3, y=5)` or `get_time()`. DO NOT FORGET THE PARENTHESES.and try NOT to use backticks :`
+    Example of valid function call:
+    {{
+        "function": "create_note",
+        "args": {{
+            "content": "Quadratic Equations explained",
+            "name": "math_notes.md"
+        }}
+    }}
+        Also You can execute a function multiple times , BY ANSWERING AGAIN AND AGAIN WITH THE FUNCTION.
+                IF YOU WANNA KEEP CALLING FUNCTIONS, YOU HAVE TO RESPOND WITH 1 FUNCTION CALL EACH TIME! ELSE, RESPOND NORMALLY.
+                In this way you would be provided with a NUMBER BESIDE A FUNCTION CALL , TO LET YOU KNOW HOW MANY TIMES IT HAS BEEN EXECUTED>>
+    DO NOT RETURN ANY FUNCTION CALL IN PLAIN TEXT!
+    **AVOID UNNECCESSARY FUNCTION CALLING!**
     """
 
+
+
 async def stream_response(response):
-    """ Converts a blocking requests stream into an async generator """
+    """Converts a blocking requests stream into an async generator"""
     for chunk in response.iter_content(chunk_size=4096):
         yield chunk
 
 def extract_function_calls(text):
-    """Extracts function calls from a response while preserving string values."""
-    function_calls = []
-    pattern = r"(\w+)\((.*?)\)"  # Match function name + anything inside parentheses
-
-    for match in re.finditer(pattern, text):
-        func_name = match.group(1)
-        args_str = match.group(2)
-
-        args = {}
-        if args_str:
-            key_value_pairs = re.findall(r"(\w+)\s*=\s*(\".*?\"|'.*?'|\S+)", args_str)
-            for key, value in key_value_pairs:
-                value = value.strip('"').strip("'")  # Remove extra quotes
-                args[key] = value
-
-        function_calls.append((func_name, args))
-
-    logging.info(f"Extracted function calls: {function_calls}")
-    return function_calls
-
+    """Extract function calls from a JSON response instead of regex."""
+    try:
+        data = json.loads(text)  # Parse the response as JSON
+        if isinstance(data, dict) and "function" in data and "args" in data:
+            return [(data["function"], data["args"])]
+    except json.JSONDecodeError:
+        pass
+    
+    return []
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
@@ -127,46 +119,65 @@ async def chat(request: Request):
                 response_chunks.append(chunk_str)
                 chunk_content = chunk_str.split(': ', 1)[-1]
                 try:
-                    content = json.loads(
-                        chunk_content.split(': ', 1)[-1])['choices'][0]['delta']['content']
+                    content = json.loads(chunk_content)['choices'][0]['delta']['content']
                 except:
                     content = ""
 
                 collected_message += content
 
-            logging.info(f"Assistant collected messages : {collected_message}")
-
+            # Function execution loop
+            max_function_calls = 5  # Prevent infinite loops
+            function_execution_rounds = 1
             function_calls = extract_function_calls(collected_message)
-            tool_results = {}
 
-            for func_name, args in function_calls:
-                logging.info(f"Assistant Called : {function_calls}")
+            while function_execution_rounds < max_function_calls and function_calls:
+                tool_results = {}
+                for func_name, args in function_calls:
 
-                if func_name in TOOLS:
-                    try:
-                        logging.debug(f"Triggering function: {func_name} with args {args}")
-                        tool_instance = TOOLS[func_name]
-                        tool_results[func_name] = tool_instance.execute(**args) if args else tool_instance.execute()
-                    except Exception as e:
-                        logging.error(f"Function execution error for {func_name}: {str(e)}")
-                        tool_results[func_name] = f"Error executing function {func_name}"
+                    if func_name in TOOLS:
+                        logging.info(f"Assistant Called : {func_name} with args {args}")
 
-            if tool_results:
-                request_data["messages"].append({"role": "assistant", "content": collected_message})
-                
-                for func_name, result in tool_results.items():
-                    request_data["messages"].append({
-                        "role": "system",
-                        "content": f"Here are tool results; Only you can see these results. Let the user know the results : {func_name} → {result}"
-                    })
+                        try:
+                            tool_instance = TOOLS[func_name]
+                            tool_results[func_name] = tool_instance.execute(**args) if args else tool_instance.execute()
+                        except Exception as e:
+                            logging.error(f"Function execution error for {func_name}: {str(e)}")
+                            tool_results[func_name] = f"Error executing function {func_name}"
 
-                final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL+"/chat/completions", json=request_data, headers=headers, stream=True))
-                
-                async for new_chunk in stream_response(final_response):
-                    yield new_chunk.decode()
-            else:
-                for chunk in response_chunks:
-                    yield chunk
+                if tool_results:
+                    request_data["messages"].append({"role": "assistant", "content": f"{collected_message}"})
+                    for func_name, result in tool_results.items():
+                        request_data["messages"].append({
+                            "role": "system",
+                            "content": f"""Execution {function_execution_rounds} results:
+                                        {func_name} → {result}"""
+                        })
+
+                    # Get new response with updated messages
+                    next_response = await asyncio.to_thread(lambda: requests.post(BASE_URL+"/chat/completions", json=request_data, headers=headers, stream=True))
+                    
+                    collected_message = ""
+                    response_chunks = []  # Reset collected messages for new function call extraction
+                    async for new_chunk in stream_response(next_response):
+                        chunk_str = new_chunk.decode()
+                        response_chunks.append(chunk_str)
+                        chunk_content = chunk_str.split(': ', 1)[-1]
+                        try:
+                            content = json.loads(chunk_content)['choices'][0]['delta']['content']
+
+                        except:
+                            content = ""
+
+                        collected_message += content
+                        function_calls = extract_function_calls(collected_message)
+
+                    function_execution_rounds += 1  # Prevent infinite loops
+                else:
+                    break  # No tool results, exit loop
+
+            for new_chunk in response_chunks:
+                yield new_chunk
+
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -178,13 +189,9 @@ proxy_router = APIRouter()
 
 @proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_request(path: str, request: Request):
-    """
-    Acts as a transparent proxy, forwarding all requests to BASE_URL.
-    """
+    """Acts as a transparent proxy, forwarding all requests to BASE_URL."""
     try:
-        base_url = os.getenv("BASE_URL", "https://api.together.xyz/v1")
-        target_url = f"{base_url}/{path}"
-
+        target_url = f"{BASE_URL}/{path}"
         headers = {key: value for key, value in request.headers.items() if key.lower() != "host"}
         headers["Authorization"] = f"Bearer {API_KEY}"
 
@@ -193,14 +200,9 @@ async def proxy_request(path: str, request: Request):
 
         response = requests.request(method, target_url, headers=headers, data=body)
 
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            headers=dict(response.headers)
-        )
+        return Response(content=response.content, status_code=response.status_code, headers=dict(response.headers))
     
     except Exception as e:
         return HTTPException(status_code=500, detail=str(e))
 
-# ✅ Register the proxy router AFTER defining specific endpoints
 app.include_router(proxy_router, prefix="/v1")
