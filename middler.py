@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, APIRouter, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import requests
@@ -9,14 +9,10 @@ from dotenv import load_dotenv
 import logging
 import re
 import importlib.util
-import os
-import logging
 from tools.tools_base import Tool
 
 # Configure logging globally
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# Ensure FastAPI captures logs
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
@@ -42,7 +38,6 @@ def load_tools():
                 if isinstance(attr, type) and issubclass(attr, Tool) and attr is not Tool:
                     TOOLS[tool_name] = attr()  # Instantiate and add to TOOLS
                     logging.info(f"Loaded tool: {tool_name}")
-
 
 # Load tools at startup
 load_tools()
@@ -70,8 +65,8 @@ BASE_URL = os.getenv('BASE_URL', 'https://api.together.xyz/v1')
 
 AUTH_HEADER = {"Authorization": f"Bearer {API_KEY}"}
 
-# Generate system prompt describing available tools
 def generate_system_prompt():
+    """Generate system message with available tools."""
     tool_descriptions = "\n".join(
         [f"- `{name}`: {func.__doc__ or 'No description available.'}" for name, func in TOOLS.items()]
     )
@@ -79,7 +74,7 @@ def generate_system_prompt():
     You are a helpful assistant with access to external functions.
     You can use the following tools:
     {tool_descriptions}
-    When a function is needed, describe its call explicitly in your response, like `calculate_sum(x=3, y=5)` or `get_time()`. DO NOT FORGET THE PARANTHESIS.
+    When a function is needed, describe its call explicitly in your response, like `calculate_sum(x=3, y=5)` or `get_time()`. DO NOT FORGET THE PARENTHESES.and try NOT to use backticks :`
     """
 
 async def stream_response(response):
@@ -98,9 +93,7 @@ def extract_function_calls(text):
 
         args = {}
         if args_str:
-            # Extract key-value pairs
             key_value_pairs = re.findall(r"(\w+)\s*=\s*(\".*?\"|'.*?'|\S+)", args_str)
-
             for key, value in key_value_pairs:
                 value = value.strip('"').strip("'")  # Remove extra quotes
                 args[key] = value
@@ -110,22 +103,20 @@ def extract_function_calls(text):
     logging.info(f"Extracted function calls: {function_calls}")
     return function_calls
 
+
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     try:
-        # Parse request JSON
         request_data = await request.json()
         logging.info(f"Incoming Request:\n{json.dumps(request_data, indent=2)}")
 
-        # Inject system message
         system_message = {"role": "system", "content": generate_system_prompt()}
         request_data["messages"].insert(0, system_message)
 
         logging.info(f"Sending Request:\n{json.dumps(request_data, indent=3)}")
 
-        # Forward request to LLM server
         headers = {"Content-Type": "application/json", **AUTH_HEADER}
-        response = await asyncio.to_thread(lambda: requests.post(BASE_URL, json=request_data, headers=headers, stream=True))
+        response = await asyncio.to_thread(lambda: requests.post(BASE_URL + "/chat/completions", json=request_data, headers=headers, stream=True))
 
         async def event_stream():
             collected_message = ""
@@ -133,7 +124,7 @@ async def chat(request: Request):
 
             async for chunk in stream_response(response):
                 chunk_str = chunk.decode()
-                response_chunks.append(chunk_str)  # Store the chunk
+                response_chunks.append(chunk_str)
                 chunk_content = chunk_str.split(': ', 1)[-1]
                 try:
                     content = json.loads(
@@ -142,28 +133,21 @@ async def chat(request: Request):
                     content = ""
 
                 collected_message += content
+
             logging.info(f"Assistant collected messages : {collected_message}")
 
-            # Extract function calls from response
             function_calls = extract_function_calls(collected_message)
             tool_results = {}
 
-            # Execute each function sequentially
             for func_name, args in function_calls:
                 logging.info(f"Assistant Called : {function_calls}")
 
-                # Corrected tool execution logic
                 if func_name in TOOLS:
                     try:
                         logging.debug(f"Triggering function: {func_name} with args {args}")
-                        # Instantiate the tool class
-                        tool_instance = TOOLS[func_name]  
-                        # Call the execute method, passing arguments if available
+                        tool_instance = TOOLS[func_name]
                         tool_results[func_name] = tool_instance.execute(**args) if args else tool_instance.execute()
-
                     except Exception as e:
-                        logging.debug(f"Triggering function: {func_name} with args {args}")
-
                         logging.error(f"Function execution error for {func_name}: {str(e)}")
                         tool_results[func_name] = f"Error executing function {func_name}"
 
@@ -173,16 +157,14 @@ async def chat(request: Request):
                 for func_name, result in tool_results.items():
                     request_data["messages"].append({
                         "role": "system",
-                        "content": f"Here are tool results;Only you can see these results. Let the user know the results : {func_name} → {result}"
+                        "content": f"Here are tool results; Only you can see these results. Let the user know the results : {func_name} → {result}"
                     })
 
-                # Send new request with tool results
-                final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL, json=request_data, headers=headers, stream=True))
-                # Continue streaming the new response
+                final_response = await asyncio.to_thread(lambda: requests.post(BASE_URL+"/chat/completions", json=request_data, headers=headers, stream=True))
+                
                 async for new_chunk in stream_response(final_response):
                     yield new_chunk.decode()
             else:
-                # No functions triggered, return normal response
                 for chunk in response_chunks:
                     yield chunk
 
@@ -191,3 +173,34 @@ async def chat(request: Request):
     except Exception as e:
         logging.error(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+proxy_router = APIRouter()
+
+@proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_request(path: str, request: Request):
+    """
+    Acts as a transparent proxy, forwarding all requests to BASE_URL.
+    """
+    try:
+        base_url = os.getenv("BASE_URL", "https://api.together.xyz/v1")
+        target_url = f"{base_url}/{path}"
+
+        headers = {key: value for key, value in request.headers.items() if key.lower() != "host"}
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+        method = request.method
+        body = await request.body()
+
+        response = requests.request(method, target_url, headers=headers, data=body)
+
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=dict(response.headers)
+        )
+    
+    except Exception as e:
+        return HTTPException(status_code=500, detail=str(e))
+
+# ✅ Register the proxy router AFTER defining specific endpoints
+app.include_router(proxy_router, prefix="/v1")
