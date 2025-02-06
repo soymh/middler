@@ -90,7 +90,7 @@ def generate_system_prompt():
     }}
     Also, you can execute a function multiple times, BY RESPONDING AGAIN AND AGAIN WITH THE FUNCTION.
     IF YOU WANT TO  CALL FUNCTIONS, **YOU HAVE TO RESPOND WITH 1 FUNCTION CALL EACH TIME!** ELSE, RESPOND NORMALLY.
-    DO NOT RETURN ANY FUNCTION CALL IN PLAIN TEXT!
+    DO NOT RETURN ANY FUNCTION CALL IN PLAIN TEXT OR ALONG A PLAIN TEXT!
     **AVOID UNNECESSARY FUNCTION CALLING!**
     """
 
@@ -101,6 +101,8 @@ async def stream_response(openai_stream):
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     try:
+
+        count_loop= 1
         request_data = await request.json()
         logging.info(f"Incoming Request:\n{json.dumps(request_data, indent=2)}")
 
@@ -129,7 +131,7 @@ async def chat(request: Request):
             collected_message += content if content else ""
 
         function_calls = extract_function_calls(collected_message)
-        logging.info(f"1st clct msg:{collected_message}")
+        logging.info(f"1st clct msg:{collected_message}\n------ count loop:{function_execution_rounds}------")
 
 
         while function_execution_rounds < max_function_calls and function_calls:
@@ -141,41 +143,44 @@ async def chat(request: Request):
                     try:
                         tool_instance = TOOLS[func_name]
                         tool_results[func_name] = tool_instance.execute(**args) if args else tool_instance.execute()
-                        logging.info(f"Assistant Called: {func_name} with args {args}")
+                        logging.info(f"Assistant Called: {func_name} with args {args}, \n------ count loop:{function_execution_rounds}------")
 
                     except Exception as e:
                         logging.error(f"Function execution error for {func_name}: {str(e)}")
                         tool_results[func_name] = f"Error executing function {func_name}"
 
-            if tool_results:
-                request_data["messages"].append({"role": "assistant", "content": collected_message})
+                    if tool_results:
+                        request_data["messages"].append({"role": "assistant", "content": collected_message})
 
-                for func_name, result in tool_results.items():
-                    request_data["messages"].append({
-                        "role": "system",
-                        "content": f"""Execution {function_execution_rounds} results:
-                                        {func_name} → {result}"""
-                    })
+                        for func_name, result in tool_results.items():
+                            request_data["messages"].append({
+                                "role": "system",
+                                "content": f"""Execution {function_execution_rounds} results:
+                                                {func_name} → {result}"""
+                            })
 
-                # Get new response with updated messages
-                function_execution_rounds += 1
-                openai_stream = await aclient.chat.completions.create(model=request_data["model"],
-                messages=request_data["messages"],
-                temperature=request_data.get("temperature", 0.1),
-                stream=True)
+                        # Get new response with updated messages
+                        function_execution_rounds += 1
+                        openai_stream = await aclient.chat.completions.create(model=request_data["model"],
+                        messages=request_data["messages"],
+                        temperature=request_data.get("temperature", 0.1),
+                        stream=True)
 
-                collected_message = ""
-                response_chunks = []  # Reset collected messages for new function call extraction
+                        collected_message = ""
+                        response_chunks = []  # Reset collected messages for new function call extraction
 
-                async for chunk in openai_stream:
-                    response_chunks.append(chunk)
-                    content = getattr(chunk.choices[0].delta, "content", "")  # ✅ Access via attributes
-                    collected_message += content if content else ""
-                logging.info(f"2nd clct msg:{collected_message}")
+                        async for chunk in openai_stream:
+                            response_chunks.append(chunk)
+                            content = getattr(chunk.choices[0].delta, "content", "")  # ✅ Access via attributes
+                            collected_message += content if content else ""
+                        logging.info(f"2nd clct msg:{collected_message}\n------ count loop:{function_execution_rounds}------")
 
-                function_calls = extract_function_calls(collected_message)
-            else:
-                break  # No tool results, exit loop
+                        function_calls = extract_function_calls(collected_message)
+
+                else:
+                    break  # No tool results, exit loop
+
+            function_execution_rounds+=1
         return StreamingResponse(stream_response(openai_stream), media_type="text/event-stream")
 
     except Exception as e:
