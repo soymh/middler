@@ -89,16 +89,14 @@ def generate_system_prompt():
         }}
     }}
     Also, you can execute a function multiple times, BY RESPONDING AGAIN AND AGAIN WITH THE FUNCTION.
-    IF YOU WANT TO KEEP CALLING FUNCTIONS, YOU HAVE TO RESPOND WITH 1 FUNCTION CALL EACH TIME! ELSE, RESPOND NORMALLY.
+    IF YOU WANT TO  CALL FUNCTIONS, **YOU HAVE TO RESPOND WITH 1 FUNCTION CALL EACH TIME!** ELSE, RESPOND NORMALLY.
     DO NOT RETURN ANY FUNCTION CALL IN PLAIN TEXT!
     **AVOID UNNECESSARY FUNCTION CALLING!**
     """
 
 async def stream_response(openai_stream):
     async for chunk in openai_stream:
-        content = getattr(chunk.choices[0].delta, "content", "")
-        yield f"data: {json.dumps({'content': content})}\n\n"
-
+        yield chunk
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
@@ -128,7 +126,8 @@ async def chat(request: Request):
         async for chunk in openai_stream:
             response_chunks.append(chunk)
             content = getattr(chunk.choices[0].delta, "content", "")  # ✅ Access via attributes
-            collected_message += content
+            logging.info(f"1st cntnt:{content}")
+            collected_message += content if content else ""
 
         function_calls = extract_function_calls(collected_message)
         logging.info(f"clct msg:{collected_message}")
@@ -173,7 +172,7 @@ async def chat(request: Request):
                 async for chunk in openai_stream:
                     response_chunks.append(chunk)
                     content = getattr(chunk.choices[0].delta, "content", "")  # ✅ Access via attributes
-                    collected_message += content
+                    collected_message += content if content else ""
 
                 function_calls = extract_function_calls(collected_message)
             else:
