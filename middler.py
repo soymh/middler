@@ -126,11 +126,10 @@ async def chat(request: Request):
         async for chunk in openai_stream:
             response_chunks.append(chunk)
             content = getattr(chunk.choices[0].delta, "content", "")  # ✅ Access via attributes
-            logging.info(f"1st cntnt:{content}")
             collected_message += content if content else ""
 
         function_calls = extract_function_calls(collected_message)
-        logging.info(f"clct msg:{collected_message}")
+        logging.info(f"1st clct msg:{collected_message}")
 
 
         while function_execution_rounds < max_function_calls and function_calls:
@@ -160,7 +159,6 @@ async def chat(request: Request):
 
                 # Get new response with updated messages
                 function_execution_rounds += 1
-
                 openai_stream = await aclient.chat.completions.create(model=request_data["model"],
                 messages=request_data["messages"],
                 temperature=request_data.get("temperature", 0.1),
@@ -173,6 +171,7 @@ async def chat(request: Request):
                     response_chunks.append(chunk)
                     content = getattr(chunk.choices[0].delta, "content", "")  # ✅ Access via attributes
                     collected_message += content if content else ""
+                logging.info(f"2nd clct msg:{collected_message}")
 
                 function_calls = extract_function_calls(collected_message)
             else:
